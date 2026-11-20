@@ -46,3 +46,13 @@ def test_rejects_invalid_digest_fields(field: str, value: str):
 def test_rejects_incomplete_context_without_inventing_receipt_fields():
     with pytest.raises(ValueError, match="videoHash"):
         build_verification_receipt({"proofId": "a" * 64})
+
+
+def test_receipt_remains_unsigned_when_key_history_is_requested():
+    # Public signing-key history is served by a separate read-only endpoint.
+    # The unsigned receipt model must not embed key material or signatures.
+    receipt = build_verification_receipt(context())
+
+    assert "signingKeys" not in receipt
+    assert "keyHistory" not in receipt
+    assert "signature" not in receipt
