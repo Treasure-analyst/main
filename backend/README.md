@@ -209,6 +209,24 @@ Output never includes connection strings or secrets: every line is scrubbed of
 the `DATABASE_URL` value, URL credentials, and `password=`/`token=`-style
 values, and unexpected exceptions are reported by type name only.
 
+## Index Rebuild Dry-Run
+
+The chain indexer can reconstruct a temporary projection from synthetic events
+and report differences against the live index without replacing it. The dry-run
+is read-only with respect to the live index: it writes only to a temporary
+state directory that is removed after the run.
+
+Each projection carries a deterministic fingerprint: a SHA-256 digest over a
+canonical, sorted encoding of the projected records. Identical event inputs
+always yield identical fingerprints, so the live and rebuilt projections can be
+compared by digest alone. Differences are reported per record key with the
+fingerprint of each side; no raw evidence, media, or secrets are included in
+the report.
+
+Rollback: the dry-run stores no new durable evidence and changes no schema.
+Removing the dry-run entry point and its focused coverage restores the previous
+behaviour. Temporary state directories are deleted automatically.
+
 ## Privacy-Safe Service Metrics
 
 `GET /metrics` exposes service workload, latency, status code distributions, and bounded upload-size metrics in standard Prometheus format.

@@ -85,6 +85,9 @@ class AppConfig:
     retention_blob_gc_enabled: bool = False
     retention_unreferenced_blobs_enabled: bool = False
     retention_dry_run: bool = False
+    # Index rebuild dry-run: build a temporary projection and report diffs only.
+    index_rebuild_dry_run_enabled: bool = False
+    index_rebuild_dry_run_max_events: int = 100_000
 
 
 
@@ -165,6 +168,8 @@ def load_config() -> AppConfig:
         retention_blob_gc_enabled=_blob_gc_enabled_env(),
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
+        index_rebuild_dry_run_enabled=_bool_env("INDEX_REBUILD_DRY_RUN_ENABLED", False),
+        index_rebuild_dry_run_max_events=_int_env("INDEX_REBUILD_DRY_RUN_MAX_EVENTS", 100_000),
     )
 
 
@@ -291,33 +296,4 @@ def _retention_batch_size_env(name: str = "HARPOCRATES_RETENTION_BATCH_SIZE", de
 JOB_FILE_TTL_SECONDS_DEFAULT = 86_400
 
 
-def _job_file_ttl_env(
-    name: str = "HARPOCRATES_JOB_FILE_TTL_SECONDS",
-    default: int = JOB_FILE_TTL_SECONDS_DEFAULT,
-) -> int:
-    """Load HARPOCRATES_JOB_FILE_TTL_SECONDS (default 24h = 86400s)."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer") from exc
-    if parsed < 0:
-        raise RuntimeError(f"{name} must be non-negative")
-    return parsed
-
-
-def _blob_gc_enabled_env() -> bool:
-    """Return whether blob garbage collection is enabled in retention worker."""
-    for var in (
-        "RETENTION_BLOB_GC_ENABLED",
-        "HARPOCRATES_RETENTION_BLOB_GC_ENABLED",
-        "RETENTION_UNREFERENCED_BLOBS_ENABLED",
-        "HARPOCRATES_RETENTION_UNREFERENCED_BLOBS_ENABLED",
-    ):
-        val = os.getenv(var)
-        if val is not None:
-            return val.strip().lower() in {"1", "true", "yes", "on"}
-    return False
-
+def _job_file_ttl_
