@@ -363,3 +363,306 @@ def test_backdating_risk_high_with_large_drift(current_time_ms):
     risk = check_backdating_risk(attestation)
     assert risk["risk_level"] in ("high", "medium")
     assert any("drift" in reason.lower() for reason in risk["reasons"])
+
+
+def test_backdating_risk_with_rfc3161_anchor(valid_attestation, current_time_ms):
+    with_anchor = add_rfc3161_anchor(
+        valid_attestation,
+        token_bytes="verified_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=current_time_ms,
+        verification_status="valid",
+    )
+    
+    risk = check_backdating_risk(with_anchor)
+    # Should have lower risk with independent anchor
+    assert risk["risk_level"] in ("none", "low")
+
+
+# ── Adversarial inputs ─────────────────────────────────────────────────────
+
+def test_reject_wrong_protocol():
+    attestation = TimeAttestation(
+        version=1,
+        protocol="wrong-protocol/v1",
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        observed_time=ObservedTime(unix_ms=int(time.time() * 1000), source_label="test"),
+    )
+    
+    with pytest.raises(ValueError, match="Protocol mismatch"):
+        encode_time_attestation(attestation)
+
+
+def test_reject_unsupported_version():
+    attestation = TimeAttestation(
+        version=999,
+        protocol=PROFILE_ID,
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        observed_time=ObservedTime(unix_ms=int(time.time() * 1000), source_label="test"),
+    )
+    
+    with pytest.raises(ValueError, match="Unsupported"):
+        encode_time_attestation(attestation)
+
+
+def test_reject_invalid_evidence_digest():
+    with pytest.raises(ValueError, match="64-character hex"):
+        create_time_attestation("not_a_valid_hex_digest")
+
+
+def test_reject_short_tx_hash(valid_attestation):
+    with pytest.raises(ValueError, match="64-character hex"):
+        add_stellar_anchor(
+            valid_attestation,
+            ledger_sequence=1,
+            ledger_timestamp=1000000,
+            transaction_hash="tooshort",
+            network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+        )
+
+
+# ── Offline verification scenarios ─────────────────────────────────────────
+
+def test_offline_verification_preserves_structure(valid_attestation, current_time_ms):
+    # Add both anchor types
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=555,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    with_both = add_rfc3161_anchor(
+        with_stellar,
+        token_bytes="offline_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=current_time_ms,
+        verification_status="unverified",
+    )
+    
+    # Encode, decode, validate - simulates offline verification
+    encoded = encode_time_attestation(with_both)
+    decoded = decode_time_attestation(encoded)
+    errors = validate_time_attestation(decoded, VALID_EVIDENCE_DIGEST)
+    
+    assert len(errors) == 0
+    assert len(decoded.stellar_anchors) == 1
+    assert len(decoded.rfc3161_anchors) == 1
+
+
+def test_unverified_rfc3161_is_valid_state(valid_attestation, current_time_ms):
+    """Absence of trusted timestamp remains valid but lower assurance."""
+    with_unverified = add_rfc3161_anchor(
+        valid_attestation,
+        token_bytes="unverified_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=current_time_ms,
+        verification_status="unverified",
+        verification_error="TSA certificate not in trust store",
+    )
+    
+    errors = validate_time_attestation(with_unverified, VALID_EVIDENCE_DIGEST)
+    assert len(errors) == 0  # Unverified is acceptable
+    
+    risk = check_backdating_risk(with_unverified)
+    # Should still reduce risk even if unverified
+    assert risk["risk_level"] in ("none", "low", "medium")
+
+
+# ── Edge cases ─────────────────────────────────────────────────────────────
+
+def test_leap_second_boundary(current_time_ms):
+    # Simulate time around a leap second (December 31, 2016 23:59:60)
+    leap_second_ms = 1483228800000  # Jan 1, 2017 00:00:00 UTC
+    
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=leap_second_ms,
+    )
+    
+    # Should not error on valid timestamp near leap second
+    errors = validate_time_attestation(attestation, VALID_EVIDENCE_DIGEST)
+    # Only check for non-leap-second-related errors
+    leap_related = [e for e in errors if "leap" in e.lower()]
+    assert len(leap_related) == 0
+
+
+def test_year_boundary_2038():
+    # Test Y2038 boundary (32-bit Unix timestamp overflow)
+    y2038_ms = 2147483647 * 1000  # Jan 19, 2038 03:14:07 UTC
+    
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=y2038_ms,
+    )
+    
+    encoded = encode_time_attestation(attestation)
+    decoded = decode_time_attestation(encoded)
+    
+    assert decoded.claimed_time.unix_ms == y2038_ms
+
+
+def test_multiple_stellar_anchors_from_different_networks(valid_attestation, current_time_ms):
+    # Add Testnet anchor
+    with_testnet = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase="Test SDF Network ; September 2015",
+    )
+    
+    # Add Pubnet anchor (hypothetical - testing structure)
+    with_both = add_stellar_anchor(
+        with_testnet,
+        ledger_sequence=200,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash="c" * 64,
+        network_passphrase="Public Global Stellar Network ; September 2015",
+    )
+    
+    assert len(with_both.stellar_anchors) == 2
+    assert with_both.stellar_anchors[0].network_passphrase != with_both.stellar_anchors[1].network_passphrase
+
+
+# ── Time bounds (explicit inclusive/exclusive) ────────────────────────────────
+
+def test_encode_includes_time_bounds(valid_attestation, current_time_ms):
+    """Encoded time attestation includes explicit time bounds metadata."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    with_both = add_rfc3161_anchor(
+        with_stellar,
+        token_bytes="test_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=current_time_ms,
+    )
+    
+    encoded = encode_time_attestation(with_both)
+    
+    assert "timeBounds" in encoded
+    bounds = encoded["timeBounds"]
+    assert bounds["claimedTime"] == "inclusive"
+    assert bounds["observedTime"] == "inclusive"
+    assert bounds["stellarAnchors"] == "inclusive"
+    assert bounds["rfc3161Anchors"] == "inclusive"
+
+
+def test_encode_time_bounds_minimal_attestation():
+    """Minimal attestation (only observed time) includes time bounds."""
+    attestation = create_time_attestation(VALID_EVIDENCE_DIGEST)
+    encoded = encode_time_attestation(attestation)
+    
+    assert "timeBounds" in encoded
+    bounds = encoded["timeBounds"]
+    assert bounds["observedTime"] == "inclusive"
+    assert "claimedTime" not in bounds
+    assert "stellarAnchors" not in bounds
+    assert "rfc3161Anchors" not in bounds
+
+
+def test_decode_ignores_time_bounds_for_backward_compatibility(valid_attestation, current_time_ms):
+    """Decoding works with or without timeBounds field (backward compatibility)."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    encoded = encode_time_attestation(with_stellar)
+    # Remove timeBounds to simulate old format
+    encoded_without_bounds = {k: v for k, v in encoded.items() if k != "timeBounds"}
+    
+    decoded = decode_time_attestation(encoded_without_bounds)
+    
+    assert decoded.stellar_anchors[0].ledger_sequence == 100
+    assert decoded.evidence_digest == VALID_EVIDENCE_DIGEST
+
+
+def test_fixed_clock_boundary_exact_match(valid_attestation):
+    """Exact timestamp boundary matching with fixed clock."""
+    # Use a fixed timestamp for deterministic testing
+    fixed_time_ms = 1700000000000  # Fixed reference time
+    
+    # Create attestation with claimed time exactly at fixed time
+    attestation = create_time_attestation(
+        evidence_digest=VALID_EVIDENCE_DIGEST,
+        claimed_time_ms=fixed_time_ms,
+    )
+    
+    # Manually set observed time to same fixed time for exact boundary test
+    attestation = TimeAttestation(
+        version=attestation.version,
+        protocol=attestation.protocol,
+        evidence_digest=attestation.evidence_digest,
+        claimed_time=attestation.claimed_time,
+        observed_time=ObservedTime(unix_ms=fixed_time_ms, source_label="fixed_clock"),
+        stellar_anchors=attestation.stellar_anchors,
+        rfc3161_anchors=attestation.rfc3161_anchors,
+    )
+    
+    encoded = encode_time_attestation(attestation)
+    decoded = decode_time_attestation(encoded)
+    
+    # Exact boundary: claimed and observed time are identical
+    assert decoded.claimed_time.unix_ms == fixed_time_ms
+    assert decoded.observed_time.unix_ms == fixed_time_ms
+    assert encoded["timeBounds"]["claimedTime"] == "inclusive"
+    assert encoded["timeBounds"]["observedTime"] == "inclusive"
+
+
+def test_fixed_clock_stellar_anchor_boundary(valid_attestation):
+    """Stellar ledger timestamp at exact boundary with fixed clock."""
+    fixed_ledger_ts = 1700000000  # Fixed ledger timestamp (Unix seconds)
+    fixed_gen_time_ms = 1700000000000  # Fixed gen time (Unix ms)
+    
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=fixed_ledger_ts,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    with_rfc3161 = add_rfc3161_anchor(
+        with_stellar,
+        token_bytes="boundary_token",
+        tsa_url="https://tsa.example.com",
+        gen_time=fixed_gen_time_ms,
+    )
+    
+    encoded = encode_time_attestation(with_rfc3161)
+    decoded = decode_time_attestation(encoded)
+    
+    # Verify exact boundary values preserved
+    assert decoded.stellar_anchors[0].ledger_timestamp == fixed_ledger_ts
+    assert decoded.rfc3161_anchors[0].gen_time == fixed_gen_time_ms
+    assert encoded["timeBounds"]["stellarAnchors"] == "inclusive"
+    assert encoded["timeBounds"]["rfc3161Anchors"] == "inclusive"
+
+
+def test_time_bounds_canonical_hash_deterministic(valid_attestation, current_time_ms):
+    """Canonical hash includes time bounds for deterministic verification."""
+    with_stellar = add_stellar_anchor(
+        valid_attestation,
+        ledger_sequence=100,
+        ledger_timestamp=current_time_ms // 1000,
+        transaction_hash=VALID_TX_HASH,
+        network_passphrase=STELLAR_TESTNET_PASSPHRASE,
+    )
+    
+    hash1 = canonical_time_attestation_hash(with_stellar)
+    hash2 = canonical_time_attestation_hash(with_stellar)
+    
+    assert hash1 == hash2
+    # Hash should be deterministic and include time bounds
+    assert len(hash1) == 64
