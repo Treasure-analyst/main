@@ -209,9 +209,8 @@ def get_blob_info(content_hash: str) -> dict | None:
             cursor.execute("select encrypted_dek, storage_path from blobs where content_hash = %s", (content_hash,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
 def rotate_encryption_key(new_master_key=None, old_master_key=None, key_id=None, *, content_hashes=None):
-    import os
-    from cryptography.fernet import Fernet
     old_key = old_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
     new_key = new_master_key or os.getenv("MASTER_ENCRYPTION_KEY")
     if not old_key:
