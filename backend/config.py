@@ -88,7 +88,8 @@ class AppConfig:
     # Public receipt signing-key history: bounded number of entries served by the
     # read-only key-history endpoint. Public keys only; never private material.
     receipt_key_history_max_entries: int = 100
-
+    registration_reconcile_state_dir: str = ""
+    stellar_network_passphrase: str = ""
 
 
 def load_config() -> AppConfig:
@@ -169,6 +170,12 @@ def load_config() -> AppConfig:
         retention_unreferenced_blobs_enabled=_blob_gc_enabled_env(),
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
         receipt_key_history_max_entries=_int_env("RECEIPT_KEY_HISTORY_MAX_ENTRIES", 100),
+        registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
+        stellar_network_passphrase=(
+            _str_env("STELLAR_NETWORK_PASSPHRASE")
+            or _str_env("HARPOCRATES_NETWORK_PASSPHRASE")
+            or ""
+        ),
     )
 
 
@@ -189,6 +196,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:
