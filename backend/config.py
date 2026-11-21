@@ -88,7 +88,8 @@ class AppConfig:
     # Index rebuild dry-run: build a temporary projection and report diffs only.
     index_rebuild_dry_run_enabled: bool = False
     index_rebuild_dry_run_max_events: int = 100_000
-
+    registration_reconcile_state_dir: str = ""
+    stellar_network_passphrase: str = ""
 
 
 def load_config() -> AppConfig:
@@ -170,6 +171,12 @@ def load_config() -> AppConfig:
         retention_dry_run=_bool_env("HARPOCRATES_RETENTION_DRY_RUN", False),
         index_rebuild_dry_run_enabled=_bool_env("INDEX_REBUILD_DRY_RUN_ENABLED", False),
         index_rebuild_dry_run_max_events=_int_env("INDEX_REBUILD_DRY_RUN_MAX_EVENTS", 100_000),
+        registration_reconcile_state_dir=_str_env("HARPOCRATES_REGISTRATION_RECONCILE_DIR") or "",
+        stellar_network_passphrase=(
+            _str_env("STELLAR_NETWORK_PASSPHRASE")
+            or _str_env("HARPOCRATES_NETWORK_PASSPHRASE")
+            or ""
+        ),
     )
 
 
@@ -190,6 +197,19 @@ def _upload_chunk_bytes() -> int:
 def _csv(name: str, default: str) -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_nonnegative_int_env(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer")
+    return parsed
 
 
 def _int_env(name: str, default: int) -> int:

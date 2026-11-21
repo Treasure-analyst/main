@@ -6,6 +6,8 @@ Usage (run from ``backend/`` with ``DATABASE_URL`` set)::
     python manage.py [--json] drift
     python manage.py [--json] retention (--dry-run | --run) [--batch-size N]
     python manage.py [--json] reconcile [--limit N]
+    python manage.py [--json] rebuild-index [--limit N]
+    python manage.py [--json] projection-reconcile --start-ledger N --end-ledger N --contract-id ID
 
 Exit codes:
 
@@ -63,6 +65,16 @@ def _positive_int(raw: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return value
+
+
+def _bounded_positive_int(maximum: int) -> Callable[[str], int]:
+    def parse(raw: str) -> int:
+        value = _positive_int(raw)
+        if value > maximum:
+            raise argparse.ArgumentTypeError(f"must be no greater than {maximum}")
+        return value
+
+    return parse
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +195,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     }
 
 
+def _cmd_projection_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    import projection_reconcile
+
+    report = projection_reconcile.reconcile_projection_range(
+        start_ledger=args.start_ledger,
+        end_ledger=args.end_ledger,
+        contract_id=args.contract_id,
+        max_events=args.limit,
+        rpc_url=args.rpc_url,
+    )
+    return (EXIT_OK if report["ok"] else EXIT_PROBLEMS), {
+        "command": "projection-reconcile",
+        **report,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="manage.py",
@@ -230,6 +258,40 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--limit", type=_positive_int, default=1000)
     rebuild.set_defaults(handler=_cmd_rebuild_index)
 
+    projection_reconcile = sub.add_parser(
+        "projection-reconcile",
+        help="compare chain lifecycle events with indexed proof projections (read-only)",
+    )
+    projection_reconcile.add_argument(
+        "--start-ledger",
+        type=_positive_int,
+        required=True,
+        help="first ledger in the inclusive range",
+    )
+    projection_reconcile.add_argument(
+        "--end-ledger",
+        type=_positive_int,
+        required=True,
+        help="last ledger in the inclusive range (maximum range: 10000 ledgers)",
+    )
+    projection_reconcile.add_argument(
+        "--contract-id",
+        required=True,
+        help="Soroban registry contract to inspect",
+    )
+    projection_reconcile.add_argument(
+        "--limit",
+        type=_bounded_positive_int(10_000),
+        default=1_000,
+        help="maximum chain events to inspect (default: 1000, maximum: 10000)",
+    )
+    projection_reconcile.add_argument(
+        "--rpc-url",
+        default=None,
+        help="Soroban RPC URL (default: SOROBAN_RPC_URL or STELLAR_RPC_URL)",
+    )
+    projection_reconcile.set_defaults(handler=_cmd_projection_reconcile)
+
     return parser
 
 
@@ -258,6 +320,13 @@ def _emit(payload: dict[str, Any], as_json: bool, write: Callable[[str], Any]) -
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)  # exits with EXIT_USAGE (2) on bad usage
+    if args.command == "projection-reconcile":
+        from projection_reconcile import MAX_LEDGER_RANGE
+
+        if args.end_ledger < args.start_ledger:
+            parser.error("--end-ledger must be greater than or equal to --start-ledger")
+        if args.end_ledger - args.start_ledger + 1 > MAX_LEDGER_RANGE:
+            parser.error(f"ledger range must not exceed {MAX_LEDGER_RANGE} ledgers")
     write = sys.stdout.write
 
     if not os.getenv("DATABASE_URL"):
