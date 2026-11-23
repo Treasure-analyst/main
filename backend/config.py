@@ -4,6 +4,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from register_auth import ScopedKey, parse_scoped_keys
 
